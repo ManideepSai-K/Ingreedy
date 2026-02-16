@@ -70,12 +70,31 @@ function App() {
       </button>
 
       {/* The Result Display */}
+      {/* The Result Display */}
       {chefResponse && (
         <div style={{ marginTop: '2rem', padding: '1rem', border: '1px solid #ccc' }}>
-          <h3>Backend Connection Success! 🎉</h3>
-          <p><strong>Status:</strong> {chefResponse.status}</p>
+          <h3>Recipes Found! 🎉</h3>
           <p><strong>Message:</strong> {chefResponse.message}</p>
-          <p><strong>Ingredients Received by Python:</strong> {chefResponse.your_pantry.join(', ')}</p>
+          
+          {/* Loop through the Spoonacular data and display the titles */}
+          {chefResponse.data && (
+            <ul style={{ listStyleType: 'none', padding: 0 }}>
+              {chefResponse.data.map((recipe) => (
+                <li key={recipe.id} style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
+                  <h4 style={{ margin: '0 0 0.5rem 0' }}>{recipe.title}</h4>
+                  <p style={{ margin: 0, fontSize: '0.9rem', color: '#555' }}>
+                    Missing Ingredients: {recipe.missedIngredientCount}
+                  </p>
+                  {/* Spoonacular gives us images for free! Let's render them */}
+                  <img 
+                    src={recipe.image} 
+                    alt={recipe.title} 
+                    style={{ width: '100px', borderRadius: '8px', marginTop: '0.5rem' }} 
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>

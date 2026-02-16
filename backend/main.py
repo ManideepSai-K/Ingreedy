@@ -22,49 +22,64 @@ app.add_middleware(
 # 2. Securely grab the key
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 
+from typing import Optional
+
 class PantryRequest(BaseModel):
     ingredients: list[str]
+    cuisine: Optional[str] = None  # e.g., "Italian", "Mexican", "Asian", "Indian"
 
-# 3. The Real Recipe Engine
+# ... (keep your imports and app setup exactly the same) ...
+
 @app.post("/api/get-recipes")
 def get_struggle_meals(request: PantryRequest):
-    # Failsafe: Check if the API key loaded correctly
     if not SPOONACULAR_API_KEY:
-        raise HTTPException(status_code=500, detail="API Key is missing from the server.")
+        raise HTTPException(status_code=500, detail="API Key missing.")
 
-    # Spoonacular expects a comma-separated string (e.g., "eggs,rice,onions")
-    ingredients_string = ",".join(request.ingredients)
+    # THE STAPLES INJECTOR
+    # Define the core items you assume every student has in their kitchen
+    DEFAULT_STAPLES = [
+        "salt", "black pepper", "cooking oil", "butter", 
+        "garlic", "onion", "soy sauce", "chili powder"
+    ]
     
-    # The exact endpoint we are querying
-    url = "https://api.spoonacular.com/recipes/findByIngredients"
+    # Silently merge the user's actual pantry with the default staples
+    combined_ingredients = request.ingredients + DEFAULT_STAPLES
     
-    # The parameters we attach to the URL
+    # Now we join the massive list to send to Spoonacular
+    ingredients_string = ",".join(combined_ingredients)
+    
+    url = "https://api.spoonacular.com/recipes/complexSearch"
+    
     params = {
-        "ingredients": ingredients_string,
-        "number": 5,           # Give us the top 5 recipes
-        "ranking": 2,          # Maximize used ingredients, minimize missing ones
-        "ignorePantry": "true", # Assume they have water, salt, oil, etc.
+        "includeIngredients": ingredients_string,
+        "number": 50,  
+        "fillIngredients": "true",
+        "ignorePantry": "true", # Keep this on to catch water/sugar
+        "sort": "min-missing-ingredients", 
         "apiKey": SPOONACULAR_API_KEY
     }
 
+    if request.cuisine:
+        params["cuisine"] = request.cuisine
+
     try:
-        # The Python Backend (Chef) asks Spoonacular (Supplier) for the recipes
         response = requests.get(url, params=params)
-        
-        # If Spoonacular's servers crash, this throws an error immediately
         response.raise_for_status()
         
-        # Extract the raw JSON data
-        recipes_data = response.json()
+        raw_recipes = response.json().get("results", [])
         
-        # Send the actual recipes back to our React Frontend
+        # We can now be incredibly strict because our Staples Injector is padding the stats
+        strict_recipes = [
+            recipe for recipe in raw_recipes 
+            if recipe["missedIngredientCount"] <= 1
+        ]
+        
         return {
             "status": "success",
-            "message": f"Found {len(recipes_data)} struggle meals!",
-            "data": recipes_data
+            "message": f"Scanned 50 {request.cuisine or 'global'} recipes. Found {len(strict_recipes)} struggle meals!",
+            "data": strict_recipes
         }
 
     except requests.exceptions.RequestException as e:
-        # If the request fails, tell the frontend exactly why
-        print(f"Error calling Spoonacular: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch recipes from external API.")
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch recipes.")

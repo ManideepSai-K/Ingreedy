@@ -1,33 +1,38 @@
 import { useState } from 'react';
 
 function App() {
-  // 1. State Management: The memory of your UI
-  const [currentInput, setCurrentInput] = useState(''); // What the user is typing right now
-  const [pantry, setPantry] = useState([]); // The list of saved ingredients
-  const [chefResponse, setChefResponse] = useState(null); // The data returned from Python
+  const [currentInput, setCurrentInput] = useState(''); 
+  const [pantry, setPantry] = useState([]); 
+  const [chefResponse, setChefResponse] = useState(null); 
+  
+  // THE NEW STATE: Tracking the dropdown selection
+  const [cuisine, setCuisine] = useState(''); 
 
-  // 2. Add item to the pantry list
   const handleAddIngredient = () => {
     if (currentInput.trim() !== '') {
-      setPantry([...pantry, currentInput.trim()]); // Add new item to existing array
-      setCurrentInput(''); // Clear the input field
+      setPantry([...pantry, currentInput.trim()]); 
+      setCurrentInput(''); 
     }
   };
 
-  // 3. The API Call (The exact same thing Swagger just did)
   const handleFindMeals = async () => {
     try {
+      // THE UPGRADED PAYLOAD: Now sending both ingredients AND cuisine
+      const payload = {
+        ingredients: pantry,
+        cuisine: cuisine !== '' ? cuisine : null // If no cuisine selected, send null
+      };
+
       const response = await fetch('http://127.0.0.1:8000/api/get-recipes', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        // We must format our array exactly how the Python Pydantic model expects it
-        body: JSON.stringify({ ingredients: pantry }), 
+        body: JSON.stringify(payload), 
       });
 
       const data = await response.json();
-      setChefResponse(data); // Save Python's response to React state
+      setChefResponse(data); 
       console.log("Backend says:", data);
       
     } catch (error) {
@@ -46,12 +51,29 @@ function App() {
           type="text" 
           value={currentInput}
           onChange={(e) => setCurrentInput(e.target.value)}
-          placeholder="e.g., eggs, rice..."
+          placeholder="e.g., chicken, rice..."
           style={{ padding: '0.5rem', marginRight: '0.5rem' }}
         />
         <button onClick={handleAddIngredient} style={{ padding: '0.5rem' }}>
           Add to Pantry
         </button>
+      </div>
+
+      {/* THE NEW UI: Cuisine Dropdown */}
+      <div style={{ marginBottom: '1rem' }}>
+        <label style={{ marginRight: '0.5rem', fontWeight: 'bold' }}>Filter by Cuisine:</label>
+        <select 
+          value={cuisine} 
+          onChange={(e) => setCuisine(e.target.value)}
+          style={{ padding: '0.5rem' }}
+        >
+          <option value="">🌎 Global (Any)</option>
+          <option value="Italian">🍝 Italian</option>
+          <option value="Mexican">🌮 Mexican</option>
+          <option value="Asian">🍜 Asian</option>
+          <option value="Indian">🍛 Indian</option>
+          <option value="American">🍔 American</option>
+        </select>
       </div>
 
       {/* The Visual Pantry */}
@@ -70,13 +92,11 @@ function App() {
       </button>
 
       {/* The Result Display */}
-      {/* The Result Display */}
       {chefResponse && (
         <div style={{ marginTop: '2rem', padding: '1rem', border: '1px solid #ccc' }}>
           <h3>Recipes Found! 🎉</h3>
           <p><strong>Message:</strong> {chefResponse.message}</p>
           
-          {/* Loop through the Spoonacular data and display the titles */}
           {chefResponse.data && (
             <ul style={{ listStyleType: 'none', padding: 0 }}>
               {chefResponse.data.map((recipe) => (
@@ -85,7 +105,6 @@ function App() {
                   <p style={{ margin: 0, fontSize: '0.9rem', color: '#555' }}>
                     Missing Ingredients: {recipe.missedIngredientCount}
                   </p>
-                  {/* Spoonacular gives us images for free! Let's render them */}
                   <img 
                     src={recipe.image} 
                     alt={recipe.title} 

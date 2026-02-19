@@ -15,6 +15,7 @@ function App() {
   const [expandedRecipeId, setExpandedRecipeId] = useState(null);
   const [instructions, setInstructions] = useState([]);
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(false);
+  const [videoIds, setVideoIds] = useState({}); 
 
   // AI Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -92,6 +93,21 @@ function App() {
       }
 
       setInstructions(data.steps || []);
+    // ... existing instruction fetch ...
+      setInstructions(data.steps || []);
+
+      // NEW: Fire off a background request to get the YouTube video
+      if (!videoIds[recipeId]) {
+        try {
+          const videoRes = await fetch(`http://127.0.0.1:8000/api/get-tutorial?recipe_title=${title}`);
+          const videoData = await videoRes.json();
+          if (videoData.status === "success" && videoData.video_id) {
+            setVideoIds(prev => ({ ...prev, [recipeId]: videoData.video_id }));
+          }
+        } catch (err) {
+          console.error("Could not load video", err);
+        }
+      }
     } catch (error) {
       console.error("Instruction fetch failed", error);
       setInstructions(["Error loading instructions. Please try again."]);
@@ -202,8 +218,9 @@ function App() {
         <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '2px solid #eee' }}>
           <h3>{chefResponse.message}</h3>
           {chefResponse.data && (
+            
             <ul style={{ listStyleType: 'none', padding: 0 }}>
-              {chefResponse.data.map((recipe) => (
+              {chefResponse.data.map((recipe) => (                
                 <li key={recipe.id} style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9f9f9', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
                   <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1.2rem' }}>{recipe.title}</h4>
                   <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: '#555' }}>
@@ -221,12 +238,29 @@ function App() {
                   <button onClick={() => handleToggleInstructions(recipe.id)} style={{ padding: '0.5rem 1rem', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
                     {expandedRecipeId === recipe.id ? 'Hide Instructions' : 'View Instructions'}
                   </button>
+                  
                   {expandedRecipeId === recipe.id && (
                     <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#ffffff', border: '1px solid #ccc', borderRadius: '4px' }}>
                       {isLoadingInstructions ? <p style={{ margin: 0 }}>Fetching the manual...</p> : instructions.length > 0 ? (
-                        <ol style={{ margin: 0, paddingLeft: '1.5rem' }}>
-                          {instructions.map((step, idx) => <li key={idx} style={{ marginBottom: '0.5rem', lineHeight: '1.4' }}>{step}</li>)}
-                        </ol>
+                        <>
+                          {/* Render the YouTube Video if we found one */}
+                          {videoIds[recipe.id] && (
+                            <div style={{ marginBottom: '1.5rem', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+                              <iframe width="100%" height="315"
+                                src={`https://www.youtube.com/embed/${videoIds[recipe.id]}`}
+                                title="YouTube video player"
+                                frameBorder="0"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowFullScreen
+                              ></iframe>
+                            </div>
+                          )}
+                          
+                          {/* The Instructions List */}
+                          <ol style={{ margin: 0, paddingLeft: '1.5rem' }}>
+                            {instructions.map((step, idx) => <li key={idx} style={{ marginBottom: '0.5rem', lineHeight: '1.4' }}>{step}</li>)}
+                          </ol>
+                        </>
                       ) : <p style={{ margin: 0, color: '#dc3545' }}>No instructions available.</p>}
                     </div>
                   )}

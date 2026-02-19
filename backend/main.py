@@ -23,6 +23,7 @@ app.add_middleware(
 # 2. Keys and Configurations
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -224,3 +225,46 @@ def ask_sous_chef(request: ChatRequest):
     except Exception as e:
         print(f"AI Error: {e}")
         raise HTTPException(status_code=500, detail="The Sous-Chef is currently taking a smoke break. Try again later.")
+    
+@app.get("/api/get-tutorial")
+
+def get_recipe_video(recipe_title: str = Query(...)):
+    # Add these two loud print statements!
+    print(f"🔔 REACT ASKED FOR A VIDEO: {recipe_title}")
+    print(f"🔑 CURRENT API KEY IS: {YOUTUBE_API_KEY}")
+
+    if not YOUTUBE_API_KEY or YOUTUBE_API_KEY == "we_will_get_this_in_a_second":
+        print("❌ ABORTING: API key is missing or invalid!")
+        return {"status": "error", "video_id": None}
+        
+    url = "https://www.googleapis.com/youtube/v3/search"
+    # ... rest of the function stays the same ...
+        
+    url = "https://www.googleapis.com/youtube/v3/search"
+    
+    # "recipe tutorial" to the string to force YouTube to find cooking videos,
+    search_query = f"{recipe_title} recipe tutorial"
+    
+    params = {
+        "part": "snippet",
+        "q": search_query,
+        "key": YOUTUBE_API_KEY,
+        "type": "video",
+        "maxResults": 1 # best match
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        items = data.get("items", [])
+        if items:
+            video_id = items[0]["id"]["videoId"]
+            return {"status": "success", "video_id": video_id}
+            
+        return {"status": "error", "video_id": None}
+
+    except Exception as e:
+        print(f"YouTube Search failed: {e}")
+        return {"status": "error", "video_id": None}

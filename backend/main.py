@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import os
+from fastapi import FastAPI, HTTPException, Query
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -129,6 +130,74 @@ def get_struggle_meals(request: PantryRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch recipes.")
     # 5. The AI Sous-Chef Engine
+# 4. The Hybrid Instruction Engine (with AI Safety Net)
+@app.get("/api/get-instructions/{recipe_id}")
+def get_recipe_instructions(
+    recipe_id: int, 
+    recipe_title: str = Query(None), 
+    ingredients: str = Query(None)
+):
+    # 1. Try Spoonacular First (Fast)
+    if SPOONACULAR_API_KEY:
+        url = f"https://api.spoonacular.com/recipes/{recipe_id}/analyzedInstructions"
+        params = {"apiKey": SPOONACULAR_API_KEY}
+
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data and isinstance(data, list) and len(data) > 0:
+                raw_steps = data[0].get("steps", [])
+                clean_steps = [step["step"] for step in raw_steps]
+                return {"status": "success", "source": "database", "steps": clean_steps}
+        except Exception as e:
+            print(f"Spoonacular failed, switching to AI backup...")
+
+    # 2. The AI Safety Net (If Database failed or returned empty)
+    print(f"Triggering AI generation for: {recipe_title}")
+    
+    if not GEMINI_API_KEY:
+         return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
+
+    try:
+        # Dynamically grab the fastest Gemini model available
+        working_model = 'gemini-pro' 
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods and 'flash' in m.name:
+                working_model = m.name
+                break
+        
+        model = genai.GenerativeModel(working_model)
+        
+        prompt = f"""
+        Create a step-by-step cooking guide for a recipe named "{recipe_title}".
+        The user has these ingredients: {ingredients}.
+        
+        Rules:
+        1. Return ONLY the steps.
+        2. Do not include intro or outro text.
+        3. Separate each step with a pipe character "|". 
+        """
+        
+        ai_response = model.generate_content(prompt)
+        
+        # Parse the pipe-separated string back into a clean array
+        ai_steps = [s.strip() for s in ai_response.text.split('|') if s.strip()]
+        
+        return {
+            "status": "success", 
+            "source": "ai_generated", 
+            "steps": ai_steps
+        }
+
+    except Exception as e:
+        print(f"AI Generation failed: {e}")
+        return {
+            "status": "error", 
+            "steps": ["Sorry, even the AI Chef is stumped on this one."]
+        }    
+
 @app.post("/api/chat")
 def ask_sous_chef(request: ChatRequest):
     if not GEMINI_API_KEY:

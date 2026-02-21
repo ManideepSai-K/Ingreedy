@@ -7,7 +7,16 @@ from fastapi import FastAPI, HTTPException, Query
 import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import Optional
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from pydantic import BaseModel
+from typing import List
 
+# This tells FastAPI exactly what JSON structure to expect from React
+class RecipeRequest(BaseModel):
+    ingredients: List[str] = []
+    spices: List[str] = []
 load_dotenv()
 app = FastAPI()
 
@@ -26,6 +35,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    
+
+try:
+    df_recipes = pd.read_csv("recipes.csv")
+    print(f"✅ Loaded {len(df_recipes)} recipes into the ML Engine.")
+except Exception as e:
+    print(f"❌ Failed to load recipes.csv: {e}")
+    df_recipes = pd.DataFrame() # Fallback empty dataframe
 
 class ChatRequest(BaseModel):
     message: str
@@ -38,101 +55,71 @@ class PantryRequest(BaseModel):
     staples: list[str] = []
 
 @app.post("/api/get-recipes")
-def get_struggle_meals(request: PantryRequest):
-    if not SPOONACULAR_API_KEY:
-        raise HTTPException(status_code=500, detail="API Key missing.")
-    clean_ingredients = []
-    for item in request.ingredients:
-        clean_ingredients.extend([i.strip() for i in item.split(',') if i.strip()])
-        
-    clean_staples = []
-    for item in request.staples:
-        clean_staples.extend([i.strip() for i in item.split(',') if i.strip()])
+def get_recipes(request: RecipeRequest):
+    if df_recipes.empty:
+        return {"status": "error", "message": "Database is offline."}
 
-    # Input for Spoonacular
-    ingredients_string = ",".join(clean_ingredients)
+    # 1. Combine the user's entire pantry into one string
+    user_items = request.ingredients + request.spices
+    if not user_items:
+        return {"status": "success", "data": []}
     
-    url = "https://api.spoonacular.com/recipes/complexSearch"
+    user_query = " ".join(user_items).lower()
+
+    # 2. Vectorize the Data (TF-IDF)
+    # This turns words like "chicken" and "garlic" into mathematical arrays
+    vectorizer = TfidfVectorizer()
     
-    params = {
-        "includeIngredients": ingredients_string, 
-        "number": 100,  
-        "fillIngredients": "true",
-        "ignorePantry": "true", 
-        "sort": "max-used-ingredients",
-        "apiKey": SPOONACULAR_API_KEY
-    }
+    # We fit the math model on the recipe database, then transform the user's query to match
+    recipe_vectors = vectorizer.fit_transform(df_recipes['ingredients'])
+    query_vector = vectorizer.transform([user_query])
 
-    if request.cuisine:
-        params["cuisine"] = request.cuisine
+    # 3. Calculate Cosine Similarity
+    # This finds the exact geometric angle between the user's fridge vector and every recipe vector
+    similarities = cosine_similarity(query_vector, recipe_vectors).flatten()
+
+    # 4. Sort and extract the top 5 closest matches
+    top_indices = similarities.argsort()[::-1][:5]
+
+    results = []
+    user_set = set([item.lower() for item in user_items])
+
+    for idx in top_indices:
+        score = similarities[idx]
         
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        raw_recipes = response.json().get("results", [])
-        for recipe in raw_recipes:
-            actual_missing = []
-            spices_used = 0 
-            for missed in recipe.get("missedIngredients", []):
-                missed_name = missed["name"].lower()
-                is_staple = any(staple.lower() in missed_name for staple in clean_staples)
-                if is_staple:
-                    spices_used += 1 
-                else:
-                    actual_missing.append(missed) 
-            
-            recipe["missedIngredientCount"] = len(actual_missing)
-            recipe["missedIngredients"] = actual_missing
-            
-            # Ingredient Usage Score Calculation
-            core_used = 0
-            for used in recipe.get("usedIngredients", []):
-                used_name = used["name"].lower()
-                if any(core.lower() in used_name for core in clean_ingredients):
-                    core_used += 1
+        # If the similarity score is 0, they have absolutely nothing in common. Skip it.
+        if score == 0:
+            continue 
 
-            # Custom Score = Core items used + Spices utilized
-            recipe["custom_usage_score"] = (core_used * 10) + spices_used
-        best_matches = sorted(
-            raw_recipes, 
-            key=lambda x: (-x["custom_usage_score"], x["missedIngredientCount"])
-        )[:15]
-        return {
-            "status": "success",
-            "message": f"Found {len(best_matches)} recipes. Math engine fully engaged!",
-            "data": best_matches
-        }
+        row = df_recipes.iloc[idx]
+        
+        # Calculate the "Missed Ingredients" for the React UI
+        recipe_ing_list = [i.strip().lower() for i in row['ingredients'].split(',')]
+        
+        # Simple list comprehension to find what the user is missing
+        missed = [ing for ing in recipe_ing_list if not any(u in ing for u in user_set)]
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch recipes.")
+        # 5. Format exactly like Spoonacular so React doesn't break
+        results.append({
+            "id": int(row['id']),
+            "title": row['title'],
+            "image": row['image'],
+            "missedIngredientCount": len(missed),
+            "missedIngredients": [{"name": m} for m in missed],
+            "matchScore": round(float(score) * 100, 1) # A fun metric we can use later!
+        })
+
+    return {"status": "success", "data": results}
 
 # 4. The Hybrid Instruction Engine (with AI Safety Net)
+# 4. The Pure AI Instruction Engine 
 @app.get("/api/get-instructions/{recipe_id}")
 def get_recipe_instructions(
     recipe_id: int, 
     recipe_title: str = Query(None), 
     ingredients: str = Query(None)
 ):
-    # 1. Try Spoonacular First (Fast)
-    if SPOONACULAR_API_KEY:
-        url = f"https://api.spoonacular.com/recipes/{recipe_id}/analyzedInstructions"
-        params = {"apiKey": SPOONACULAR_API_KEY}
-
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data and isinstance(data, list) and len(data) > 0:
-                raw_steps = data[0].get("steps", [])
-                clean_steps = [step["step"] for step in raw_steps]
-                return {"status": "success", "source": "database", "steps": clean_steps}
-        except Exception as e:
-            print(f"Spoonacular failed, switching to AI backup...")
-
-    # 2. The AI Safety Net (If Database failed or returned empty)
-    print(f"Triggering AI generation for: {recipe_title}")
+    print(f"👨‍🍳 Triggering AI generation for: {recipe_title}")
     
     if not GEMINI_API_KEY:
          return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
@@ -169,7 +156,7 @@ def get_recipe_instructions(
         }
 
     except Exception as e:
-        print(f"AI Generation failed: {e}")
+        print(f"❌ AI Generation failed: {e}")
         return {
             "status": "error", 
             "steps": ["Sorry, even the AI Chef is stumped on this one."]

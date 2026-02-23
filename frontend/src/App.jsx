@@ -222,7 +222,21 @@ function App() {
             <ul style={{ listStyleType: 'none', padding: 0 }}>
               {chefResponse.data.map((recipe) => (                
                 <li key={recipe.id} style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9f9f9', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
-                  <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1.2rem' }}>{recipe.title}</h4>
+                  {/* The AI Match Score Badge */}
+{recipe.matchScore && (
+  <div style={{ 
+    display: 'inline-block',
+    backgroundColor: recipe.matchScore > 50 ? '#10b981' : '#f59e0b', 
+    color: '#ffffff', 
+    padding: '4px 10px', 
+    borderRadius: '12px', 
+    fontSize: '0.85rem', 
+    fontWeight: 'bold',
+    marginBottom: '0.5rem'
+  }}>
+    {recipe.matchScore}% AI Match
+  </div>
+)}<h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1.2rem' }}>{recipe.title}</h4>
                   <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: '#555' }}>
                     Missing Ingredients: <strong>{recipe.missedIngredientCount}</strong>
                   </p>

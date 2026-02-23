@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import os
+import re
 from fastapi import FastAPI, HTTPException, Query
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -12,6 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from pydantic import BaseModel
 from typing import List
+import joblib
 
 # This tells FastAPI exactly what JSON structure to expect from React
 class RecipeRequest(BaseModel):
@@ -23,7 +25,7 @@ app = FastAPI()
 # 1. The CORS Guardrail
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], 
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,12 +39,16 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
 
+# --- THE PRE-TRAINED ML BRAIN ---
 try:
-    df_recipes = pd.read_csv("recipes.csv")
-    print(f"✅ Loaded {len(df_recipes)} recipes into the ML Engine.")
+    print("🧠 Booting up the Ingreedy AI Engine...")
+    df_recipes = joblib.load("recipe_dataframe.pkl")
+    vectorizer = joblib.load("tfidf_vectorizer.pkl")
+    recipe_matrix = joblib.load("recipe_matrix.pkl")
+    print(f"✅ Loaded 100,000 recipes into memory in milliseconds!")
 except Exception as e:
-    print(f"❌ Failed to load recipes.csv: {e}")
-    df_recipes = pd.DataFrame() # Fallback empty dataframe
+    print(f"❌ Failed to load ML models: {e}")
+    df_recipes = pd.DataFrame()
 
 class ChatRequest(BaseModel):
     message: str
@@ -57,61 +63,59 @@ class PantryRequest(BaseModel):
 @app.post("/api/get-recipes")
 def get_recipes(request: RecipeRequest):
     if df_recipes.empty:
-        return {"status": "error", "message": "Database is offline."}
+        return {"status": "error", "message": "ML Brain is offline."}
 
-    # 1. Combine the user's entire pantry into one string
     user_items = request.ingredients + request.spices
+    
+    # 👇 ADD THIS WIRE-TAP RIGHT HERE 👇
+    print(f"📦 INGREDIENTS RECV: {request.ingredients}")
+    print(f"🌶️ SPICES RECV: {request.spices}")
+    print(f"🧠 COMBINED TOKENS: {user_items}")
+    # 👆 ============================== 👆
+
     if not user_items:
         return {"status": "success", "data": []}
     
     user_query = " ".join(user_items).lower()
 
-    # 2. Vectorize the Data (TF-IDF)
-    # This turns words like "chicken" and "garlic" into mathematical arrays
-    vectorizer = TfidfVectorizer()
-    
-    # We fit the math model on the recipe database, then transform the user's query to match
-    recipe_vectors = vectorizer.fit_transform(df_recipes['ingredients'])
+    # Smart Tokenization for the missing ingredients logic
+    clean_words = re.findall(r'\b[a-z]+\b', user_query)
+    user_tokens = set([w[:-1] if w.endswith('s') else w for w in clean_words] + clean_words)
     query_vector = vectorizer.transform([user_query])
 
-    # 3. Calculate Cosine Similarity
-    # This finds the exact geometric angle between the user's fridge vector and every recipe vector
-    similarities = cosine_similarity(query_vector, recipe_vectors).flatten()
-
-    # 4. Sort and extract the top 5 closest matches
+    # Calculate against the massive pre-computed matrix
+    similarities = cosine_similarity(query_vector, recipe_matrix).flatten()
     top_indices = similarities.argsort()[::-1][:5]
 
     results = []
-    user_set = set([item.lower() for item in user_items])
 
     for idx in top_indices:
         score = similarities[idx]
         
-        # If the similarity score is 0, they have absolutely nothing in common. Skip it.
         if score == 0:
             continue 
 
         row = df_recipes.iloc[idx]
         
-        # Calculate the "Missed Ingredients" for the React UI
-        recipe_ing_list = [i.strip().lower() for i in row['ingredients'].split(',')]
+        # Convert ingredients back to a list for the UI
+        recipe_ing_list = [i.strip().lower() for i in str(row['ingredients']).split(',')]
         
-        # Simple list comprehension to find what the user is missing
-        missed = [ing for ing in recipe_ing_list if not any(u in ing for u in user_set)]
+        missed = []
+        for ing in recipe_ing_list:
+            if not any(token in ing for token in user_tokens):
+                missed.append(ing)
 
-        # 5. Format exactly like Spoonacular so React doesn't break
         results.append({
             "id": int(row['id']),
-            "title": row['title'],
+            "title": row['title'], 
             "image": row['image'],
             "missedIngredientCount": len(missed),
             "missedIngredients": [{"name": m} for m in missed],
-            "matchScore": round(float(score) * 100, 1) # A fun metric we can use later!
+            "matchScore": round(float(score) * 100, 1) 
         })
 
     return {"status": "success", "data": results}
 
-# 4. The Hybrid Instruction Engine (with AI Safety Net)
 # 4. The Pure AI Instruction Engine 
 @app.get("/api/get-instructions/{recipe_id}")
 def get_recipe_instructions(
@@ -214,30 +218,30 @@ def ask_sous_chef(request: ChatRequest):
         raise HTTPException(status_code=500, detail="The Sous-Chef is currently taking a smoke break. Try again later.")
     
 @app.get("/api/get-tutorial")
-
 def get_recipe_video(recipe_title: str = Query(...)):
-    # Add these two loud print statements!
-    print(f"🔔 REACT ASKED FOR A VIDEO: {recipe_title}")
-    print(f"🔑 CURRENT API KEY IS: {YOUTUBE_API_KEY}")
-
     if not YOUTUBE_API_KEY or YOUTUBE_API_KEY == "we_will_get_this_in_a_second":
-        print("❌ ABORTING: API key is missing or invalid!")
         return {"status": "error", "video_id": None}
         
     url = "https://www.googleapis.com/youtube/v3/search"
-    # ... rest of the function stays the same ...
-        
-    url = "https://www.googleapis.com/youtube/v3/search"
     
-    # "recipe tutorial" to the string to force YouTube to find cooking videos,
-    search_query = f"{recipe_title} recipe tutorial"
+    # 1. THE SANITIZER: Keep only letters and spaces (removes numbers and weird punctuation from Kaggle)
+    clean_title = re.sub(r'[^a-zA-Z\s]', '', recipe_title).strip()
+    
+    # If the title was literally just numbers, fallback to a basic search
+    if not clean_title:
+        clean_title = recipe_title
+        
+    # 2. THE SMART PROMPT: Force YouTube to look for professional food tutorials
+    search_query = f"how to cook {clean_title} recipe step by step"
     
     params = {
         "part": "snippet",
         "q": search_query,
         "key": YOUTUBE_API_KEY,
         "type": "video",
-        "maxResults": 1 # best match
+        # We can also add videoCategoryId="26" to strictly search the "How-to & Style" category, 
+        # but a good text query usually does the trick!
+        "maxResults": 1 
     }
 
     try:

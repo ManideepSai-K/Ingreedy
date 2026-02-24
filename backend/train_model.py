@@ -11,9 +11,37 @@ except FileNotFoundError:
     print("❌ Error: RAW_recipes.csv not found!")
     exit()
 
-# We are upgrading from 5,000 to 100,000 recipes! 
-# (This is a huge leap, but safe enough not to crash standard laptop RAM during training)
-df_subset = df_raw.head(100000).copy()
+print("👔 Applying Professional Filter...")
+def is_standard_name(title):
+    title = str(title).lower()
+    
+    # 1. Reject if it has numbers or weird symbols (only allow letters, spaces, and hyphens)
+    if not re.match(r'^[a-z\s\-]+$', title): 
+        return False
+    
+    words = title.split()
+    
+    # 2. Reject if it's too long (blog post title) or too short (just "chicken")
+    if len(words) < 2 or len(words) > 5: 
+        return False
+    
+    # 3. Reject informal mommy-blog buzzwords
+    blog_words = {'mom', 'dad', 'hubby', 'best', 'ever', 'easy', 'quick', 'super', 'delicious', 'yummy', 'my', 'style', 'good', 'favorite', 'secret', 'minute', 'perfect', 'the'}
+    if any(word in blog_words for word in words): 
+        return False
+    
+    return True
+
+# Apply the strict filter to the entire 500k dataset
+df_raw['is_standard'] = df_raw['name'].apply(is_standard_name)
+df_clean_pool = df_raw[df_raw['is_standard'] == True]
+
+print(f"🔪 Sliced away the garbage. Found {len(df_clean_pool)} perfectly named recipes.")
+
+# Now we grab our subset from ONLY the highly professional names
+df_subset = df_clean_pool.head(100000).copy()
+
+# ... (The rest of your script stays exactly the same from here down!)
 
 print("🧹 Cleaning titles and ingredients...")
 def clean_recipe_title(raw_title):

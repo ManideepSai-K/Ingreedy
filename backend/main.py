@@ -1,18 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import os
 import re
-from fastapi import FastAPI, HTTPException, Query
 import google.generativeai as genai
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Iterable, List
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from pydantic import BaseModel
-from typing import List
 import joblib
 
 # This tells FastAPI exactly what JSON structure to expect from React
@@ -32,22 +29,38 @@ app.add_middleware(
 )
 
 # 2. Keys and Configurations
-SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  
+def _configure_genai(api_key: str) -> None:
+    configure = getattr(genai, "configure", None)
+    if configure:
+        configure(api_key=api_key)
+
+
+def _list_genai_models() -> Iterable:
+    list_models = getattr(genai, "list_models", None)
+    if list_models:
+        return list_models()
+    return []
+
+
+def _create_generative_model(model_name: str):
+    model_cls = getattr(genai, "GenerativeModel", None)
+    if model_cls is None:
+        raise RuntimeError("GenerativeModel is unavailable in google.generativeai")
+    return model_cls(model_name)
+
+
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    _configure_genai(GEMINI_API_KEY)
     
 
 # --- THE PRE-TRAINED ML BRAIN ---
 try:
-    print("🧠 Booting up the Ingreedy AI Engine...")
     df_recipes = joblib.load("recipe_dataframe.pkl")
     vectorizer = joblib.load("tfidf_vectorizer.pkl")
     recipe_matrix = joblib.load("recipe_matrix.pkl")
-    print(f"✅ Loaded 100,000 recipes into memory in milliseconds!")
 except Exception as e:
-    print(f"❌ Failed to load ML models: {e}")
     df_recipes = pd.DataFrame()
 
 class ChatRequest(BaseModel):
@@ -67,12 +80,6 @@ def get_recipes(request: RecipeRequest):
 
     user_items = request.ingredients + request.spices
     
-    # 👇 ADD THIS WIRE-TAP RIGHT HERE 👇
-    print(f"📦 INGREDIENTS RECV: {request.ingredients}")
-    print(f"🌶️ SPICES RECV: {request.spices}")
-    print(f"🧠 COMBINED TOKENS: {user_items}")
-    # 👆 ============================== 👆
-
     if not user_items:
         return {"status": "success", "data": []}
     
@@ -123,20 +130,18 @@ def get_recipe_instructions(
     recipe_title: str = Query(None), 
     ingredients: str = Query(None)
 ):
-    print(f"👨‍🍳 Triggering AI generation for: {recipe_title}")
-    
     if not GEMINI_API_KEY:
          return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
 
     try:
         # Dynamically grab the fastest Gemini model available
         working_model = 'gemini-pro' 
-        for m in genai.list_models():
+        for m in _list_genai_models():
             if 'generateContent' in m.supported_generation_methods and 'flash' in m.name:
                 working_model = m.name
                 break
         
-        model = genai.GenerativeModel(working_model)
+        model = _create_generative_model(working_model)
         
         prompt = f"""
         Create a step-by-step cooking guide for a recipe named "{recipe_title}".
@@ -160,7 +165,6 @@ def get_recipe_instructions(
         }
 
     except Exception as e:
-        print(f"❌ AI Generation failed: {e}")
         return {
             "status": "error", 
             "steps": ["Sorry, even the AI Chef is stumped on this one."]
@@ -193,7 +197,7 @@ def ask_sous_chef(request: ChatRequest):
     try:
         # Dynamically fetch the allowed models
         working_model_name = None
-        for m in genai.list_models():
+        for m in _list_genai_models():
             if 'generateContent' in m.supported_generation_methods:
                 working_model_name = m.name
                 if "flash" in working_model_name.lower():
@@ -202,10 +206,8 @@ def ask_sous_chef(request: ChatRequest):
         if not working_model_name:
             raise Exception("No active Gemini models found for this API key.")
 
-        print(f"Server successfully locked onto model: {working_model_name}") # Logs to terminal so you know it worked
-
         # 3. Call the Gemini Model using the dynamic name
-        model = genai.GenerativeModel(working_model_name) 
+        model = _create_generative_model(working_model_name) 
         response = model.generate_content(full_prompt)
         
         return {
@@ -214,7 +216,6 @@ def ask_sous_chef(request: ChatRequest):
         }
 
     except Exception as e:
-        print(f"AI Error: {e}")
         raise HTTPException(status_code=500, detail="The Sous-Chef is currently taking a smoke break. Try again later.")
     
 @app.get("/api/get-tutorial")
@@ -257,5 +258,4 @@ def get_recipe_video(recipe_title: str = Query(...)):
         return {"status": "error", "video_id": None}
 
     except Exception as e:
-        print(f"YouTube Search failed: {e}")
         return {"status": "error", "video_id": None}

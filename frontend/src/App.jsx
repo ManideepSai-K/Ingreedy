@@ -1,48 +1,47 @@
 import { useState } from 'react';
 
 function App() {
-  // Main Pantry State
   const [currentInput, setCurrentInput] = useState(''); 
   const [pantry, setPantry] = useState([]); 
   
-  // NEW: Spice Rack State
   const [currentSpiceInput, setCurrentSpiceInput] = useState('');
   const [spices, setSpices] = useState([]);
 
-  // App State
   const [chefResponse, setChefResponse] = useState(null); 
   const [cuisine, setCuisine] = useState(''); 
+  
+  // NEW: The Drafts State
+  const [activeDraft, setActiveDraft] = useState(0);
+  
   const [expandedRecipeId, setExpandedRecipeId] = useState(null);
   const [instructions, setInstructions] = useState([]);
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(false);
   const [videoIds, setVideoIds] = useState({}); 
 
-  // AI Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatHistory, setChatHistory] = useState([
-    { role: 'assistant', text: "What's cooking? Ask me anything about your ingredients or recipes." }
+    { role: 'assistant', text: "Hi, I'm your AI Sous-Chef. What are we cooking today?" }
   ]);
   const [isChatLoading, setIsChatLoading] = useState(false);
 
   // --- Handlers ---
-  const handleAddIngredient = () => {
-    if (currentInput.trim() !== '') {
-      setPantry([...pantry, currentInput.trim()]); 
+  const handleAddIngredient = (itemToAdd = currentInput) => {
+    if (itemToAdd.trim() !== '' && !pantry.includes(itemToAdd.trim())) {
+      setPantry([...pantry, itemToAdd.trim()]); 
       setCurrentInput(''); 
     }
   };
 
-  const handleAddSpice = () => {
-    if (currentSpiceInput.trim() !== '') {
-      setSpices([...spices, currentSpiceInput.trim()]);
+  const handleAddSpice = (itemToAdd = currentSpiceInput) => {
+    if (itemToAdd.trim() !== '' && !spices.includes(itemToAdd.trim())) {
+      setSpices([...spices, itemToAdd.trim()]);
       setCurrentSpiceInput('');
     }
   };
 
   const handleFindMeals = async () => {
     try {
-      // THE NEW PAYLOAD: Sending both tiers to Python
       const payload = { 
         ingredients: pantry, 
         cuisine: cuisine !== '' ? cuisine : null,
@@ -56,10 +55,13 @@ function App() {
       });
       const data = await response.json();
       setChefResponse(data); 
+      
+      // Reset back to Draft 1 and close instructions on a new search
+      setActiveDraft(0); 
       setExpandedRecipeId(null);
       setInstructions([]);
     } catch (error) {
-      // API connection failed - silently handle
+      console.error("API connection failed:", error);
     }
   };
 
@@ -73,14 +75,11 @@ function App() {
     setExpandedRecipeId(recipeId);
     setIsLoadingInstructions(true);
 
-    // 1. Get the context needed for the AI Backup
     const recipe = chefResponse?.data?.find(r => r.id === recipeId);
     const title = recipe ? encodeURIComponent(recipe.title) : "";
-    // We combine both pantries so the AI knows everything you have
     const allIngredients = encodeURIComponent([...pantry, ...spices].join(","));
 
     try {
-      // 2. Send the context as Query Parameters
       const response = await fetch(
         `http://127.0.0.1:8000/api/get-instructions/${recipeId}?recipe_title=${title}&ingredients=${allIngredients}`
       );
@@ -88,7 +87,6 @@ function App() {
       const data = await response.json();
       setInstructions(data.steps || []);
 
-      // NEW: Fire off a background request to get the YouTube video
       if (!videoIds[recipeId]) {
         try {
           const videoRes = await fetch(`http://127.0.0.1:8000/api/get-tutorial?recipe_title=${title}`);
@@ -97,7 +95,7 @@ function App() {
             setVideoIds(prev => ({ ...prev, [recipeId]: videoData.video_id }));
           }
         } catch (err) {
-          // Video loading failed - silently handle
+          console.error("Video load failed");
         }
       }
     } catch (error) {
@@ -109,7 +107,6 @@ function App() {
 
   const handleSendMessage = async () => {
     if (chatInput.trim() === '') return;
-
     const userMessage = { role: 'user', text: chatInput };
     setChatHistory((prev) => [...prev, userMessage]);
     setChatInput('');
@@ -125,71 +122,90 @@ function App() {
         body: JSON.stringify({
           message: userMessage.text,
           recipe_title: recipeTitle,
-          // Give the AI the full context of BOTH lists
           pantry: [...pantry, ...spices] 
         }),
       });
-
       const data = await response.json();
       setChatHistory((prev) => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (error) {
-      setChatHistory((prev) => [...prev, { role: 'assistant', text: "The kitchen is too loud, I can't hear you! (Connection Error)" }]);
+      setChatHistory((prev) => [...prev, { role: 'assistant', text: "Connection error." }]);
     } finally {
       setIsChatLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto', paddingBottom: '100px' }}>
-      <h1>Ingreedy 🍳</h1>
-      <p>The Struggle Meal Engine</p>
-
-      {/* --- UI Layout: Two Columns for Inputs --- */}
-      <div style={{ display: 'flex', gap: '2rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: '#f0f4f9', padding: '3rem 1.5rem', fontFamily: '"Google Sans", "Segoe UI", Roboto, Helvetica, Arial, sans-serif', color: '#1f1f1f' }}>
+      <div style={{ maxWidth: '900px', margin: '0 auto', paddingBottom: '100px' }}>
         
-        {/* Column 1: Core Ingredients */}
-        <div style={{ flex: '1 1 300px', padding: '1rem', backgroundColor: '#f0f4f8', borderRadius: '8px' }}>
-          <h3>🥩 Main Ingredients</h3>
-          <p style={{ fontSize: '0.85rem', color: '#666' }}>Proteins, carbs, heavy veggies</p>
-          <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
-            <input 
-              type="text" value={currentInput} onChange={(e) => setCurrentInput(e.target.value)}
-              placeholder="e.g., chicken, rice..."
-              style={{ flex: 1, padding: '0.5rem', marginRight: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}
-            />
-            <button onClick={handleAddIngredient} style={{ padding: '0.5rem', cursor: 'pointer', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}>
-              Add
-            </button>
-          </div>
-          <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.9rem' }}>
-            {pantry.map((item, index) => <li key={index}>{item}</li>)}
-          </ul>
+        <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: '500', margin: '0 0 0.5rem 0', background: 'linear-gradient(74deg, #4285f4 0, #9b72cb 9%, #d96570 20%, #d96570 24%, #9b72cb 35%, #4285f4 44%, #9b72cb 50%, #d96570 56%, #1f1f1f 75%, #1f1f1f 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+            ✨ Ingreedy Engine
+          </h1>
+          <p style={{ fontSize: '1.1rem', color: '#444746', margin: 0 }}>Intelligent meal generation from your pantry.</p>
         </div>
 
-        {/* Column 2: Spices & Staples */}
-        <div style={{ flex: '1 1 300px', padding: '1rem', backgroundColor: '#fff4e6', borderRadius: '8px' }}>
-          <h3>🧂 Spice Rack & Staples</h3>
-          <p style={{ fontSize: '0.85rem', color: '#666' }}>Oils, seasonings, sauces, butter</p>
-          <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
-            <input 
-              type="text" value={currentSpiceInput} onChange={(e) => setCurrentSpiceInput(e.target.value)}
-              placeholder="e.g., oil, garlic, salt..."
-              style={{ flex: 1, padding: '0.5rem', marginRight: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}
-            />
-            <button onClick={handleAddSpice} style={{ padding: '0.5rem', cursor: 'pointer', backgroundColor: '#fd7e14', color: 'white', border: 'none', borderRadius: '4px' }}>
-              Add
-            </button>
-          </div>
-          <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.9rem' }}>
-            {spices.map((item, index) => <li key={index}>{item}</li>)}
-          </ul>
-        </div>
-      </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
+          
+          {/* Main Ingredients Card */}
+          <div style={{ backgroundColor: '#ffffff', borderRadius: '24px', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem', fontWeight: '500' }}>Main Ingredients</h3>
+            <p style={{ fontSize: '0.85rem', color: '#444746', marginBottom: '1rem' }}>Proteins, carbs, heavy veggies</p>
+            
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+              <input 
+                type="text" value={currentInput} onChange={(e) => setCurrentInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddIngredient()}
+                placeholder="e.g., chicken, rice..."
+                style={{ flex: 1, padding: '0.75rem 1.25rem', border: '1px solid #dadce0', borderRadius: '50px', fontSize: '1rem', outline: 'none' }}
+              />
+              <button onClick={() => handleAddIngredient()} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#f0f4f9', color: '#1f1f1f', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '500' }}>Add</button>
+            </div>
+            
+            {/* NEW: Quick Add Buttons for Pantry */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '1rem' }}>
+              {['Chicken', 'Rice', 'Eggs', 'Onion', 'Garlic', 'Tomatoes'].map(item => (
+                <button key={item} onClick={() => handleAddIngredient(item)} style={{ padding: '4px 10px', backgroundColor: '#ffffff', border: '1px solid #dadce0', borderRadius: '16px', fontSize: '0.75rem', color: '#444746', cursor: 'pointer' }}>+ {item}</button>
+              ))}
+            </div>
 
-      <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-        <div>
-          <label style={{ marginRight: '0.5rem', fontWeight: 'bold' }}>Cuisine:</label>
-          <select value={cuisine} onChange={(e) => setCuisine(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {pantry.map((item, index) => (
+                <span key={index} style={{ backgroundColor: '#e8f0fe', color: '#1a73e8', padding: '6px 14px', borderRadius: '16px', fontSize: '0.85rem', fontWeight: '500' }}>{item}</span>
+              ))}
+            </div>
+          </div>
+
+          {/* Spice Rack Card */}
+          <div style={{ backgroundColor: '#ffffff', borderRadius: '24px', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem', fontWeight: '500' }}>Spice Rack & Staples</h3>
+            <p style={{ fontSize: '0.85rem', color: '#444746', marginBottom: '1rem' }}>Oils, seasonings, sauces, butter</p>
+            
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+              <input 
+                type="text" value={currentSpiceInput} onChange={(e) => setCurrentSpiceInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddSpice()}
+                placeholder="e.g., oil, garlic, salt..."
+                style={{ flex: 1, padding: '0.75rem 1.25rem', border: '1px solid #dadce0', borderRadius: '50px', fontSize: '1rem', outline: 'none' }}
+              />
+              <button onClick={() => handleAddSpice()} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#f0f4f9', color: '#1f1f1f', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '500' }}>Add</button>
+            </div>
+
+            {/* NEW: Quick Add Buttons for Spices */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '1rem' }}>
+              {['Salt', 'Pepper', 'Olive Oil', 'Butter', 'Soy Sauce', 'Chili'].map(item => (
+                <button key={item} onClick={() => handleAddSpice(item)} style={{ padding: '4px 10px', backgroundColor: '#ffffff', border: '1px solid #dadce0', borderRadius: '16px', fontSize: '0.75rem', color: '#444746', cursor: 'pointer' }}>+ {item}</button>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {spices.map((item, index) => (
+                <span key={index} style={{ backgroundColor: '#fce8e6', color: '#d93025', padding: '6px 14px', borderRadius: '16px', fontSize: '0.85rem', fontWeight: '500' }}>{item}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: '1rem', marginBottom: '3rem' }}>
+          <select value={cuisine} onChange={(e) => setCuisine(e.target.value)} style={{ padding: '0.75rem 1.5rem', borderRadius: '50px', border: '1px solid #dadce0', outline: 'none', backgroundColor: '#ffffff', cursor: 'pointer', fontSize: '0.95rem', fontWeight: '500' }}>
             <option value="">🌎 Global (Any)</option>
             <option value="Italian">🍝 Italian</option>
             <option value="Mexican">🌮 Mexican</option>
@@ -197,117 +213,146 @@ function App() {
             <option value="Indian">🍛 Indian</option>
             <option value="American">🍔 American</option>
           </select>
+          <button onClick={handleFindMeals} style={{ padding: '0.75rem 2rem', backgroundColor: '#1a73e8', color: '#ffffff', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '500', fontSize: '1rem', boxShadow: '0 2px 4px rgba(26, 115, 232, 0.3)' }}>
+            Generate Recipes ✨
+          </button>
         </div>
-        
-        <button onClick={handleFindMeals} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '1rem' }}>
-          Find Struggle Meal 🚀
-        </button>
-      </div>
 
-      {/* --- Recipe Results (Same as before) --- */}
-      {chefResponse && (
-        <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '2px solid #eee' }}>
-          <h3>{chefResponse.message}</h3>
-          {chefResponse.data && (
+        {/* --- NEW: The "Drafts" Interface --- */}
+        {chefResponse && chefResponse.data && chefResponse.data.length > 0 && (
+          <div style={{ backgroundColor: '#ffffff', borderRadius: '24px', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
             
-            <ul style={{ listStyleType: 'none', padding: 0 }}>
-              {chefResponse.data.map((recipe) => (                
-                <li key={recipe.id} style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9f9f9', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
-                  {/* The AI Match Score Badge */}
-{recipe.matchScore && (
-  <div style={{ 
-    display: 'inline-block',
-    backgroundColor: recipe.matchScore > 50 ? '#10b981' : '#f59e0b', 
-    color: '#ffffff', 
-    padding: '4px 10px', 
-    borderRadius: '12px', 
-    fontSize: '0.85rem', 
-    fontWeight: 'bold',
-    marginBottom: '0.5rem'
-  }}>
-    {recipe.matchScore}% AI Match
-  </div>
-)}<h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1.2rem' }}>{recipe.title}</h4>
-                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: '#555' }}>
-                    Missing Ingredients: <strong>{recipe.missedIngredientCount}</strong>
-                  </p>
-                  
-                  {/* Show exactly what is missing so the user knows */}
-                  {recipe.missedIngredientCount > 0 && (
-                    <p style={{ margin: '0 0 1rem 0', fontSize: '0.85rem', color: '#dc3545' }}>
-                      Missing: {recipe.missedIngredients?.map(i => i.name).join(', ')}
-                    </p>
-                  )}
+            {/* The Draft Tabs */}
+            <div style={{ display: 'flex', gap: '1rem', borderBottom: '1px solid #dadce0', marginBottom: '1.5rem', overflowX: 'auto', paddingBottom: '4px' }}>
+              <span style={{ padding: '0.5rem 0', color: '#444746', fontWeight: '500', marginRight: '0.5rem', display: 'flex', alignItems: 'center' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{marginRight: '8px'}}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                View other drafts:
+              </span>
+              {chefResponse.data.slice(0, 3).map((recipe, idx) => (
+                <button 
+                  key={recipe.id}
+                  onClick={() => { setActiveDraft(idx); setExpandedRecipeId(null); }}
+                  style={{ 
+                    padding: '0.5rem 1rem', backgroundColor: 'transparent', border: 'none', 
+                    borderBottom: activeDraft === idx ? '2px solid #1a73e8' : '2px solid transparent', 
+                    color: activeDraft === idx ? '#1a73e8' : '#444746', 
+                    fontWeight: activeDraft === idx ? '600' : '500', 
+                    cursor: 'pointer', transition: 'all 0.2s', whiteSpace: 'nowrap'
+                  }}
+                >
+                  Option {idx + 1}
+                </button>
+              ))}
+            </div>
 
-                  <img src={recipe.image} alt={recipe.title} style={{ width: '150px', height: 'auto', borderRadius: '8px', display: 'block', marginBottom: '1rem' }} />
-                  <button onClick={() => handleToggleInstructions(recipe.id)} style={{ padding: '0.5rem 1rem', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                    {expandedRecipeId === recipe.id ? 'Hide Instructions' : 'View Instructions'}
-                  </button>
-                  
+            {/* The Active Draft Card */}
+            {chefResponse.data[activeDraft] && (() => {
+              const recipe = chefResponse.data[activeDraft];
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+                    
+                    {/* Image Area */}
+                    <div style={{ flex: '1 1 300px', position: 'relative', borderRadius: '16px', overflow: 'hidden', height: '250px' }}>
+                      <img src={recipe.image} alt={recipe.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      {recipe.matchScore !== undefined && (
+                        <div style={{ position: 'absolute', top: '16px', right: '16px', backgroundColor: recipe.matchScore > 50 ? '#e6f4ea' : '#fef7e0', color: recipe.matchScore > 50 ? '#137333' : '#b06000', padding: '6px 12px', borderRadius: '50px', fontWeight: '600', fontSize: '0.85rem', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+                          {recipe.matchScore}% Match
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Data Area */}
+                    <div style={{ flex: '2 1 300px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                      <h2 style={{ margin: '0 0 1rem 0', fontSize: '1.8rem', fontWeight: '500', color: '#1f1f1f', lineHeight: '1.2' }}>{recipe.title}</h2>
+                      
+                      <div style={{ marginBottom: '1.5rem' }}>
+                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', color: '#444746' }}>
+                          Missing Ingredients: <strong style={{ color: '#1f1f1f' }}>{recipe.missedIngredientCount}</strong>
+                        </p>
+                        {recipe.missedIngredientCount > 0 && (
+                          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            {recipe.missedIngredients?.map((i, idx) => (
+                              <span key={idx} style={{ backgroundColor: '#fce8e6', color: '#d93025', padding: '4px 10px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: '500' }}>
+                                {i.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <button 
+                        onClick={() => handleToggleInstructions(recipe.id)} 
+                        style={{ alignSelf: 'flex-start', padding: '0.75rem 2rem', backgroundColor: '#f0f4f9', color: '#1a73e8', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '600', transition: 'background-color 0.2s' }}
+                      >
+                        {expandedRecipeId === recipe.id ? 'Hide Instructions' : 'View Instructions'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded Instructions Area */}
                   {expandedRecipeId === recipe.id && (
-                    <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#ffffff', border: '1px solid #ccc', borderRadius: '4px' }}>
-                      {isLoadingInstructions ? <p style={{ margin: 0 }}>Fetching the manual...</p> : instructions.length > 0 ? (
+                    <div style={{ padding: '1.5rem', backgroundColor: '#f8f9fa', borderRadius: '16px', border: '1px solid #e1e5ea' }}>
+                      {isLoadingInstructions ? <p style={{ margin: 0, color: '#444746' }}>✨ AI is writing the manual...</p> : instructions.length > 0 ? (
                         <>
-                          {/* Render the YouTube Video if we found one */}
                           {videoIds[recipe.id] && (
-                            <div style={{ marginBottom: '1.5rem', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-                              <iframe width="100%" height="315"
-                                src={`https://www.youtube.com/embed/${videoIds[recipe.id]}`}
-                                title="YouTube video player"
-                                frameBorder="0"
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                allowFullScreen
-                              ></iframe>
+                            <div style={{ marginBottom: '1.5rem', borderRadius: '12px', overflow: 'hidden' }}>
+                              <iframe width="100%" height="350" src={`https://www.youtube.com/embed/${videoIds[recipe.id]}`} title="YouTube video player" frameBorder="0" allowFullScreen></iframe>
                             </div>
                           )}
-                          
-                          {/* The Instructions List */}
-                          <ol style={{ margin: 0, paddingLeft: '1.5rem' }}>
-                            {instructions.map((step, idx) => <li key={idx} style={{ marginBottom: '0.5rem', lineHeight: '1.4' }}>{step}</li>)}
+                          <h4 style={{ margin: '0 0 1rem 0', color: '#1f1f1f', fontSize: '1.1rem' }}>Step-by-Step Instructions</h4>
+                          <ol style={{ margin: 0, paddingLeft: '1.5rem', color: '#444746', fontSize: '1rem' }}>
+                            {instructions.map((step, idx) => <li key={idx} style={{ marginBottom: '0.75rem', lineHeight: '1.6' }}>{step}</li>)}
                           </ol>
                         </>
-                      ) : <p style={{ margin: 0, color: '#dc3545' }}>No instructions available.</p>}
+                      ) : <p style={{ margin: 0, color: '#d93025' }}>No instructions available.</p>}
                     </div>
                   )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {/* --- AI Chatbot (Same as before) --- */}
-      <div style={{
-        position: 'fixed', bottom: '20px', right: '20px', width: isChatOpen ? '350px' : 'auto',
-        backgroundColor: '#fff', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        border: '1px solid #ddd', overflow: 'hidden', display: 'flex', flexDirection: 'column', zIndex: 1000, transition: 'all 0.3s ease'
-      }}>
-        <div onClick={() => setIsChatOpen(!isChatOpen)} style={{ backgroundColor: '#ff4757', color: 'white', padding: '1rem', cursor: 'pointer', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}>
-          <span>🧑‍🍳 AI Sous-Chef</span><span>{isChatOpen ? '▼' : '▲'}</span>
-        </div>
-        {isChatOpen && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '400px' }}>
-            <div style={{ flex: 1, padding: '1rem', overflowY: 'auto', backgroundColor: '#fdfdfd' }}>
-              {chatHistory.map((msg, idx) => (
-                <div key={idx} style={{ marginBottom: '0.75rem', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
-                  <span style={{
-                    display: 'inline-block', padding: '0.5rem 0.75rem', borderRadius: '12px',
-                    backgroundColor: msg.role === 'user' ? '#007bff' : '#e9ecef', color: msg.role === 'user' ? 'white' : 'black',
-                    maxWidth: '85%', fontSize: '0.9rem', lineHeight: '1.3'
-                  }}>{msg.text}</span>
                 </div>
-              ))}
-              {isChatLoading && <div style={{ textAlign: 'left', fontSize: '0.9rem', color: '#888' }}>Chef is typing...</div>}
-            </div>
-            <div style={{ padding: '0.75rem', borderTop: '1px solid #ddd', display: 'flex' }}>
-              <input 
-                type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder="Ask about substitutions..." style={{ flex: 1, padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc', marginRight: '0.5rem' }}
-              />
-              <button onClick={handleSendMessage} style={{ padding: '0.5rem 1rem', backgroundColor: '#ff4757', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Send</button>
-            </div>
+              );
+            })()}
           </div>
         )}
+
+        {/* --- AI Chatbot (Remains Unchanged) --- */}
+        <div style={{
+          position: 'fixed', bottom: '24px', right: '24px', width: isChatOpen ? '380px' : 'auto',
+          backgroundColor: '#ffffff', borderRadius: '24px', boxShadow: '0 8px 24px rgba(0,0,0,0.1)',
+          overflow: 'hidden', display: 'flex', flexDirection: 'column', zIndex: 1000, transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+        }}>
+          <div onClick={() => setIsChatOpen(!isChatOpen)} style={{ backgroundColor: '#ffffff', padding: '16px 24px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isChatOpen ? '1px solid #f0f4f9' : 'none' }}>
+            <span style={{ fontWeight: '500', color: '#1f1f1f', display: 'flex', alignItems: 'center', gap: '8px' }}>✨ AI Sous-Chef</span>
+            <span style={{ color: '#444746' }}>{isChatOpen ? '✕' : '▲'}</span>
+          </div>
+          
+          {isChatOpen && (
+            <div style={{ display: 'flex', flexDirection: 'column', height: '450px' }}>
+              <div style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', backgroundColor: '#ffffff' }}>
+                {chatHistory.map((msg, idx) => (
+                  <div key={idx} style={{ marginBottom: '1rem', display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{
+                      padding: '12px 16px', borderRadius: msg.role === 'user' ? '20px 20px 4px 20px' : '20px 20px 20px 4px',
+                      backgroundColor: msg.role === 'user' ? '#e8f0fe' : '#f0f4f9', color: msg.role === 'user' ? '#1a73e8' : '#1f1f1f',
+                      maxWidth: '85%', fontSize: '0.95rem', lineHeight: '1.4'
+                    }}>
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+                {isChatLoading && <div style={{ textAlign: 'left', fontSize: '0.9rem', color: '#444746', marginLeft: '8px' }}>✨ Thinking...</div>}
+              </div>
+              
+              <div style={{ padding: '16px', borderTop: '1px solid #f0f4f9', display: 'flex', gap: '8px', backgroundColor: '#ffffff' }}>
+                <input 
+                  type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Ask a cooking question..." 
+                  style={{ flex: 1, padding: '12px 20px', borderRadius: '50px', border: '1px solid #dadce0', outline: 'none', fontSize: '0.95rem', backgroundColor: '#f8f9fa' }}
+                />
+                <button onClick={handleSendMessage} style={{ width: '45px', height: '45px', borderRadius: '50%', backgroundColor: '#1a73e8', color: '#ffffff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>↑</button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

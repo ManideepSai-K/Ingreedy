@@ -16,7 +16,7 @@ jobs:
           curl -fsS --retry 30 --retry-delay 1 --retry-all-errors http://localhost:8000/health | jq -e '.recipes > 0'
           curl -fsS http://localhost:8000/ | grep -q 'id="root"'
           curl -fsS http://localhost:8000/api/features | jq -e '.chat == false and .video == false'
-          curl -fsS -H 'Content-Type: application/json' -d '{"ingredients":["rice","eggs"]}' http://localhost:8000/api/get-recipes |
-            jq -e '(.data | length > 0) and ([.data[].missedIngredientCount] | . == sort)'
+          curl -fsS -H 'Content-Type: application/json' -d '{"ingredients":["rice","eggs"],"spices":["butter"]}' http://localhost:8000/api/get-recipes |
+            jq -e '(.data[0].title == "Simple egg fried rice") and (.data[0].missedIngredientCount == 0)'
       - if: failure()
         run: docker logs pantry || true

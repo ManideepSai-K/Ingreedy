@@ -102,11 +102,35 @@ def features():
             YOUTUBE_API_KEY != "we_will_get_this_in_a_second")}
 
 
+def input_keys(entries):
+    return {key for entry in entries for item in entry.split(",") if (key := pantry_name(item))}
+
+
+STAPLES = {"butter", "salt", "pepper", "black pepper", "oil", "olive oil", "vegetable oil", "water"}
+# A generic pantry entry can cover these everyday recipe variants.
+# Keep rice flour, rice noodles, eggplant and similar distinct foods separate.
+GENERIC_NAMES = {
+    "white rice": "rice", "cooked rice": "rice", "cooked white rice": "rice",
+    "cooked brown rice": "rice", "brown rice": "rice", "long grain rice": "rice",
+    "large egg": "egg", "medium egg": "egg",
+}
+
+
+def accepted_names(item):
+    exact = ingredient_keys[item]
+    if " or " in item:
+        return set(exact.split(" or "))
+    return {exact, GENERIC_NAMES.get(exact, exact)}
+
+
+accepted = {item: accepted_names(item) for item in ingredient_keys}
+
+
 @app.post("/api/get-recipes")
 def get_recipes(request: RecipeRequest):
-    pantry = {pantry_name(item) for entry in request.ingredients + request.spices
-              for item in entry.split(",") if item.strip()}
-    pantry.discard("")
+    entered = input_keys(request.ingredients)
+    mains = entered - STAPLES or entered
+    pantry = entered | input_keys(request.spices)
     if not pantry:
         return {"status": "success", "data": []}
 
@@ -114,12 +138,21 @@ def get_recipes(request: RecipeRequest):
     similarities = cosine_similarity(query, recipe_matrix).ravel()
     candidates = []
     for idx, items in enumerate(catalog):
-        missing = [item for item in items if ingredient_keys[item] not in pantry]
+        matched_main = set()
+        missing = []
+        for item in items:
+            names = accepted[item]
+            if pantry.isdisjoint(names):
+                missing.append(item)
+            else:
+                matched_main.update(mains.intersection(names))
+        if mains and not matched_main:
+            continue
         if len(missing) < len(items):
-            candidates.append((len(missing), -similarities[idx], idx, missing))
+            candidates.append((-len(matched_main), len(missing), -similarities[idx], idx, missing))
 
     results = []
-    for count, negative_score, idx, missing in sorted(candidates)[:5]:
+    for _, count, negative_score, idx, missing in sorted(candidates)[:5]:
         row = df_recipes.iloc[idx]
         results.append({
             "id": int(row["id"]), "title": row["title"], "image": row["image"],

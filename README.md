@@ -1,6 +1,6 @@
 # Ingreedy
 
-Find recipes using ingredients in your pantry. Recipes with all listed ingredients in your pantry rank first, then recipes with the fewest missing ingredients. TF-IDF similarity breaks ties. Matching uses normalized ingredient names and common plural forms. No staples are assumed.
+Find recipes using ingredients in your pantry. Recipes using more of your main ingredients rank first. Within that group, fewer missing items rank higher, with TF-IDF similarity breaking ties. Staples count toward what you have. Listed ingredient alternatives and common rice preparations are recognized. No staples are assumed.
 
 ## Run the portfolio demo
 

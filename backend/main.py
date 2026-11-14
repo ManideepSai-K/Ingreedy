@@ -76,59 +76,58 @@ class PantryRequest(BaseModel):
     cuisine: Optional[str] = None
     staples: list[str] = []
 
+# Keep qualifiers that change the product (e.g. chicken vs chicken broth).
+PLURALS = {
+    "eggs": "egg", "tomatoes": "tomato", "potatoes": "potato", "onions": "onion",
+    "carrots": "carrot", "beans": "bean", "peppers": "pepper", "apples": "apple",
+    "mushrooms": "mushroom", "lemons": "lemon", "bananas": "banana",
+}
+
+
+def pantry_name(name):
+    return " ".join(PLURALS.get(word, word) for word in re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def recipe_items(raw):
+    return tuple(dict.fromkeys(item.strip() for item in str(raw).split(",") if item.strip()))
+
+
+catalog = [recipe_items(raw) for raw in df_recipes["ingredients"]]
+ingredient_keys = {item: pantry_name(item) for items in catalog for item in items}
+
+
+@app.get("/api/features")
+def features():
+    return {"chat": bool(GEMINI_API_KEY), "video": bool(YOUTUBE_API_KEY and
+            YOUTUBE_API_KEY != "we_will_get_this_in_a_second")}
+
+
 @app.post("/api/get-recipes")
 def get_recipes(request: RecipeRequest):
-    if df_recipes.empty:
-        return {"status": "error", "message": "ML Brain is offline."}
-
-    user_items = request.ingredients + request.spices
-    
-    if not user_items:
+    pantry = {pantry_name(item) for entry in request.ingredients + request.spices
+              for item in entry.split(",") if item.strip()}
+    pantry.discard("")
+    if not pantry:
         return {"status": "success", "data": []}
-    
-    user_query = " ".join(user_items).lower()
 
-    # Match whole ingredient phrases so "egg" cannot cover "eggplant".
-    def ingredient_words(text):
-        return tuple(w.removesuffix("s") if len(w) > 3 and not w.endswith("ss") else w
-                     for w in re.findall(r"[a-z]+", text.lower()))
-
-    pantry_phrases = [ingredient_words(term) for item in user_items for term in item.split(",")]
-    query_vector = vectorizer.transform([user_query])
-
-    # Calculate against the massive pre-computed matrix
-    similarities = cosine_similarity(query_vector, recipe_matrix).flatten()
-    top_indices = similarities.argsort()[::-1][:5]
+    query = vectorizer.transform([" ".join(sorted(pantry))])
+    similarities = cosine_similarity(query, recipe_matrix).ravel()
+    candidates = []
+    for idx, items in enumerate(catalog):
+        missing = [item for item in items if ingredient_keys[item] not in pantry]
+        if len(missing) < len(items):
+            candidates.append((len(missing), -similarities[idx], idx, missing))
 
     results = []
-
-    for idx in top_indices:
-        score = similarities[idx]
-        
-        if score == 0:
-            continue 
-
+    for count, negative_score, idx, missing in sorted(candidates)[:5]:
         row = df_recipes.iloc[idx]
-        
-        # Convert ingredients back to a list for the UI
-        recipe_ing_list = [i.strip().lower() for i in str(row['ingredients']).split(',')]
-        
-        missed = []
-        for ing in recipe_ing_list:
-            words = ingredient_words(ing)
-            if not any(phrase and phrase == words[i:i + len(phrase)]
-                       for phrase in pantry_phrases for i in range(len(words))):
-                missed.append(ing)
-
         results.append({
-            "id": int(row['id']),
-            "title": row['title'], 
-            "image": row['image'],
-            "missedIngredientCount": len(missed),
-            "missedIngredients": [{"name": m} for m in missed],
-            "matchScore": round(float(score) * 100, 1) 
+            "id": int(row["id"]), "title": row["title"], "image": row["image"],
+            "matchedIngredients": [item for item in catalog[idx] if item not in missing],
+            "missedIngredientCount": count,
+            "missedIngredients": [{"name": item} for item in missing],
+            "matchScore": round(float(-negative_score) * 100, 1),
         })
-
     return {"status": "success", "data": results}
 
 # 4. The Pure AI Instruction Engine 

@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import requests
+import json
+from urllib.parse import urlencode
+from urllib.request import urlopen
 import os
 import re
-import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import Optional, Iterable, List
 import pandas as pd
@@ -18,15 +20,6 @@ class RecipeRequest(BaseModel):
     spices: List[str] = []
 load_dotenv()
 app = FastAPI()
-
-# 1. The CORS Guardrail
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # 2. Keys and Configurations
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -52,16 +45,26 @@ def _create_generative_model(model_name: str):
 
 
 if GEMINI_API_KEY:
+    import google.generativeai as genai
     _configure_genai(GEMINI_API_KEY)
     
 
 # --- THE PRE-TRAINED ML BRAIN ---
-try:
-    df_recipes = joblib.load("recipe_dataframe.pkl")
-    vectorizer = joblib.load("tfidf_vectorizer.pkl")
-    recipe_matrix = joblib.load("recipe_matrix.pkl")
-except Exception as e:
-    df_recipes = pd.DataFrame()
+DATA_DIR = Path(__file__).resolve().parent
+artifacts = [DATA_DIR / name for name in (
+    "recipe_dataframe.pkl", "tfidf_vectorizer.pkl", "recipe_matrix.pkl"
+)]
+if all(path.is_file() for path in artifacts):
+    df_recipes, vectorizer, recipe_matrix = [joblib.load(path) for path in artifacts]
+else:
+    df_recipes = pd.read_csv(DATA_DIR / "recipes.csv").dropna(subset=["id", "title", "ingredients"])
+    vectorizer = TfidfVectorizer()
+    recipe_matrix = vectorizer.fit_transform(df_recipes["ingredients"])
+
+@app.get("/health")
+def health():
+    return {"recipes": len(df_recipes)}
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -85,9 +88,12 @@ def get_recipes(request: RecipeRequest):
     
     user_query = " ".join(user_items).lower()
 
-    # Smart Tokenization for the missing ingredients logic
-    clean_words = re.findall(r'\b[a-z]+\b', user_query)
-    user_tokens = set([w[:-1] if w.endswith('s') else w for w in clean_words] + clean_words)
+    # Match whole ingredient phrases so "egg" cannot cover "eggplant".
+    def ingredient_words(text):
+        return tuple(w.removesuffix("s") if len(w) > 3 and not w.endswith("ss") else w
+                     for w in re.findall(r"[a-z]+", text.lower()))
+
+    pantry_phrases = [ingredient_words(term) for item in user_items for term in item.split(",")]
     query_vector = vectorizer.transform([user_query])
 
     # Calculate against the massive pre-computed matrix
@@ -109,7 +115,9 @@ def get_recipes(request: RecipeRequest):
         
         missed = []
         for ing in recipe_ing_list:
-            if not any(token in ing for token in user_tokens):
+            words = ingredient_words(ing)
+            if not any(phrase and phrase == words[i:i + len(phrase)]
+                       for phrase in pantry_phrases for i in range(len(words))):
                 missed.append(ing)
 
         results.append({
@@ -134,6 +142,13 @@ def get_recipe_instructions(
          return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
 
     try:
+        # Resolve recipe details from the same dataset used by search.
+        # Incoming pantry details can influence substitutions, not recipe identity.
+        recipe = df_recipes.loc[df_recipes["id"] == recipe_id]
+        if recipe.empty:
+            return {"status": "error", "steps": ["Recipe not found."]}
+        selected = recipe.iloc[0]
+        recipe_title = selected["title"]
         # Dynamically grab the fastest Gemini model available
         working_model = 'gemini-pro' 
         for m in _list_genai_models():
@@ -145,7 +160,8 @@ def get_recipe_instructions(
         
         prompt = f"""
         Create a step-by-step cooking guide for a recipe named "{recipe_title}".
-        The user has these ingredients: {ingredients}.
+        The listed recipe ingredients are: {selected["ingredients"]}.
+        The user has these pantry items: {ingredients}.
         
         Rules:
         1. Return ONLY the steps.
@@ -246,9 +262,8 @@ def get_recipe_video(recipe_title: str = Query(...)):
     }
 
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+        with urlopen(f"{url}?{urlencode(params)}", timeout=10) as response:
+            data = json.load(response)
         
         items = data.get("items", [])
         if items:
@@ -259,3 +274,7 @@ def get_recipe_video(recipe_title: str = Query(...)):
 
     except Exception as e:
         return {"status": "error", "video_id": None}
+
+static_dir = DATA_DIR / "static"
+if static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

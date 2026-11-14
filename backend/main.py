@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import requests
+import json
+from urllib.parse import urlencode
+from urllib.request import urlopen
 import os
 import re
-import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import Optional, Iterable, List
 import pandas as pd
@@ -18,15 +20,6 @@ class RecipeRequest(BaseModel):
     spices: List[str] = []
 load_dotenv()
 app = FastAPI()
-
-# 1. The CORS Guardrail
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # 2. Keys and Configurations
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -52,16 +45,26 @@ def _create_generative_model(model_name: str):
 
 
 if GEMINI_API_KEY:
+    import google.generativeai as genai
     _configure_genai(GEMINI_API_KEY)
     
 
 # --- THE PRE-TRAINED ML BRAIN ---
-try:
-    df_recipes = joblib.load("recipe_dataframe.pkl")
-    vectorizer = joblib.load("tfidf_vectorizer.pkl")
-    recipe_matrix = joblib.load("recipe_matrix.pkl")
-except Exception as e:
-    df_recipes = pd.DataFrame()
+DATA_DIR = Path(__file__).resolve().parent
+artifacts = [DATA_DIR / name for name in (
+    "recipe_dataframe.pkl", "tfidf_vectorizer.pkl", "recipe_matrix.pkl"
+)]
+if all(path.is_file() for path in artifacts):
+    df_recipes, vectorizer, recipe_matrix = [joblib.load(path) for path in artifacts]
+else:
+    df_recipes = pd.read_csv(DATA_DIR / "recipes.csv").dropna(subset=["id", "title", "ingredients"])
+    vectorizer = TfidfVectorizer()
+    recipe_matrix = vectorizer.fit_transform(df_recipes["ingredients"])
+
+@app.get("/health")
+def health():
+    return {"recipes": len(df_recipes)}
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -73,54 +76,58 @@ class PantryRequest(BaseModel):
     cuisine: Optional[str] = None
     staples: list[str] = []
 
+# Keep qualifiers that change the product (e.g. chicken vs chicken broth).
+PLURALS = {
+    "eggs": "egg", "tomatoes": "tomato", "potatoes": "potato", "onions": "onion",
+    "carrots": "carrot", "beans": "bean", "peppers": "pepper", "apples": "apple",
+    "mushrooms": "mushroom", "lemons": "lemon", "bananas": "banana",
+}
+
+
+def pantry_name(name):
+    return " ".join(PLURALS.get(word, word) for word in re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def recipe_items(raw):
+    return tuple(dict.fromkeys(item.strip() for item in str(raw).split(",") if item.strip()))
+
+
+catalog = [recipe_items(raw) for raw in df_recipes["ingredients"]]
+ingredient_keys = {item: pantry_name(item) for items in catalog for item in items}
+
+
+@app.get("/api/features")
+def features():
+    return {"chat": bool(GEMINI_API_KEY), "video": bool(YOUTUBE_API_KEY and
+            YOUTUBE_API_KEY != "we_will_get_this_in_a_second")}
+
+
 @app.post("/api/get-recipes")
 def get_recipes(request: RecipeRequest):
-    if df_recipes.empty:
-        return {"status": "error", "message": "ML Brain is offline."}
-
-    user_items = request.ingredients + request.spices
-    
-    if not user_items:
+    pantry = {pantry_name(item) for entry in request.ingredients + request.spices
+              for item in entry.split(",") if item.strip()}
+    pantry.discard("")
+    if not pantry:
         return {"status": "success", "data": []}
-    
-    user_query = " ".join(user_items).lower()
 
-    # Smart Tokenization for the missing ingredients logic
-    clean_words = re.findall(r'\b[a-z]+\b', user_query)
-    user_tokens = set([w[:-1] if w.endswith('s') else w for w in clean_words] + clean_words)
-    query_vector = vectorizer.transform([user_query])
-
-    # Calculate against the massive pre-computed matrix
-    similarities = cosine_similarity(query_vector, recipe_matrix).flatten()
-    top_indices = similarities.argsort()[::-1][:5]
+    query = vectorizer.transform([" ".join(sorted(pantry))])
+    similarities = cosine_similarity(query, recipe_matrix).ravel()
+    candidates = []
+    for idx, items in enumerate(catalog):
+        missing = [item for item in items if ingredient_keys[item] not in pantry]
+        if len(missing) < len(items):
+            candidates.append((len(missing), -similarities[idx], idx, missing))
 
     results = []
-
-    for idx in top_indices:
-        score = similarities[idx]
-        
-        if score == 0:
-            continue 
-
+    for count, negative_score, idx, missing in sorted(candidates)[:5]:
         row = df_recipes.iloc[idx]
-        
-        # Convert ingredients back to a list for the UI
-        recipe_ing_list = [i.strip().lower() for i in str(row['ingredients']).split(',')]
-        
-        missed = []
-        for ing in recipe_ing_list:
-            if not any(token in ing for token in user_tokens):
-                missed.append(ing)
-
         results.append({
-            "id": int(row['id']),
-            "title": row['title'], 
-            "image": row['image'],
-            "missedIngredientCount": len(missed),
-            "missedIngredients": [{"name": m} for m in missed],
-            "matchScore": round(float(score) * 100, 1) 
+            "id": int(row["id"]), "title": row["title"], "image": row["image"],
+            "matchedIngredients": [item for item in catalog[idx] if item not in missing],
+            "missedIngredientCount": count,
+            "missedIngredients": [{"name": item} for item in missing],
+            "matchScore": round(float(-negative_score) * 100, 1),
         })
-
     return {"status": "success", "data": results}
 
 # 4. The Pure AI Instruction Engine 
@@ -134,6 +141,13 @@ def get_recipe_instructions(
          return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
 
     try:
+        # Resolve recipe details from the same dataset used by search.
+        # Incoming pantry details can influence substitutions, not recipe identity.
+        recipe = df_recipes.loc[df_recipes["id"] == recipe_id]
+        if recipe.empty:
+            return {"status": "error", "steps": ["Recipe not found."]}
+        selected = recipe.iloc[0]
+        recipe_title = selected["title"]
         # Dynamically grab the fastest Gemini model available
         working_model = 'gemini-pro' 
         for m in _list_genai_models():
@@ -145,7 +159,8 @@ def get_recipe_instructions(
         
         prompt = f"""
         Create a step-by-step cooking guide for a recipe named "{recipe_title}".
-        The user has these ingredients: {ingredients}.
+        The listed recipe ingredients are: {selected["ingredients"]}.
+        The user has these pantry items: {ingredients}.
         
         Rules:
         1. Return ONLY the steps.
@@ -246,9 +261,8 @@ def get_recipe_video(recipe_title: str = Query(...)):
     }
 
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+        with urlopen(f"{url}?{urlencode(params)}", timeout=10) as response:
+            data = json.load(response)
         
         items = data.get("items", [])
         if items:
@@ -259,3 +273,7 @@ def get_recipe_video(recipe_title: str = Query(...)):
 
     except Exception as e:
         return {"status": "error", "video_id": None}
+
+static_dir = DATA_DIR / "static"
+if static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

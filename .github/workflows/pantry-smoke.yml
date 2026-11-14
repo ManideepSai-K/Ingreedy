@@ -1,0 +1,22 @@
+name: Pantry demo smoke test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t ingreedy .
+      - name: Start demo without keys
+        run: docker run -d --name pantry -p 8000:8000 ingreedy
+      - name: Check frontend and pantry API
+        shell: bash
+        run: |
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors http://localhost:8000/health | jq -e '.recipes > 0'
+          curl -fsS http://localhost:8000/ | grep -q 'id="root"'
+          curl -fsS http://localhost:8000/api/features | jq -e '.chat == false and .video == false'
+          curl -fsS -H 'Content-Type: application/json' -d '{"ingredients":["rice","eggs"]}' http://localhost:8000/api/get-recipes |
+            jq -e '(.data | length > 0) and ([.data[].missedIngredientCount] | . == sort)'
+      - if: failure()
+        run: docker logs pantry || true

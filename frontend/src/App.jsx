@@ -14,6 +14,8 @@ function App() {
   
   const [expandedRecipeId, setExpandedRecipeId] = useState(null);
   const [instructions, setInstructions] = useState([]);
+  const [details, setDetails] = useState(null);
+  const [guideError, setGuideError] = useState("");
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(false);
   const [videoIds, setVideoIds] = useState({}); 
 
@@ -82,6 +84,9 @@ function App() {
     }
 
     setExpandedRecipeId(recipeId);
+    setDetails(null);
+    setGuideError("");
+    setInstructions([]);
     setIsLoadingInstructions(true);
 
     const recipe = chefResponse?.data?.find(r => r.id === recipeId);
@@ -89,14 +94,19 @@ function App() {
     const allIngredients = encodeURIComponent([...pantry, ...spices].join(","));
 
     try {
-      if (features.chat) {
+      const detailsResponse = await fetch(`/api/recipes/${recipeId}`);
+      if (!detailsResponse.ok) throw new Error("Recipe details unavailable");
+      const recipeDetails = await detailsResponse.json();
+      if (guideRequest.current !== ticket) return;
+      setDetails(recipeDetails);
+      if (features.chat && !recipeDetails.steps.length) {
       const response = await fetch(
         `/api/get-instructions/${recipeId}?recipe_title=${title}&ingredients=${allIngredients}`
       );
       
       const data = await response.json();
       if (guideRequest.current !== ticket) return;
-      setInstructions(data.steps || []);
+      if (response.ok && data.status === "success") setInstructions(data.steps || []);
       } else setInstructions([]);
 
       if (features.video && !videoIds[recipeId]) {
@@ -111,14 +121,14 @@ function App() {
         }
       }
     } catch (error) {
-      if (ticket === guideRequest.current) setInstructions(["Error loading instructions. Please try again."]);
+      if (ticket === guideRequest.current) setGuideError("Could not load the recipe details. Close the guide and try again.");
     } finally {
       if (ticket === guideRequest.current) setIsLoadingInstructions(false);
     }
   };
 
   const handleSendMessage = async () => {
-    if (chatInput.trim() === '') return;
+    if (isChatLoading || chatInput.trim() === '') return;
     const userMessage = { role: 'user', text: chatInput };
     setChatHistory((prev) => [...prev, userMessage]);
     setChatInput('');
@@ -162,12 +172,12 @@ function App() {
           {/* Main Ingredients Card */}
           <div style={{ backgroundColor: '#ffffff', borderRadius: '24px', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
             <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem', fontWeight: '500' }}>Main Ingredients</h3>
-            <p style={{ fontSize: '0.85rem', color: '#444746', marginBottom: '1rem' }}>Proteins, carbs, heavy veggies</p>
+            <p style={{ fontSize: '0.85rem', color: '#444746', marginBottom: '1rem' }}>The ingredients you want your meal to use</p>
             
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
               <input 
-                type="text" value={currentInput} onChange={(e) => setCurrentInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddIngredient()}
-                placeholder="e.g., chicken, rice..."
+                aria-label="Main ingredients" type="text" value={currentInput} onChange={(e) => setCurrentInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddIngredient()}
+                placeholder="e.g., pasta, tomatoes, garlic"
                 style={{ minWidth: 0, flex: 1, padding: '0.75rem 1.25rem', border: '1px solid #dadce0', borderRadius: '50px', fontSize: '1rem', outline: 'none' }}
               />
               <button onClick={() => handleAddIngredient()} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#f0f4f9', color: '#1f1f1f', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '500' }}>Add</button>
@@ -194,7 +204,7 @@ function App() {
             
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
               <input 
-                type="text" value={currentSpiceInput} onChange={(e) => setCurrentSpiceInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddSpice()}
+                aria-label="Spices and staples" type="text" value={currentSpiceInput} onChange={(e) => setCurrentSpiceInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddSpice()}
                 placeholder="e.g., oil, garlic, salt..."
                 style={{ minWidth: 0, flex: 1, padding: '0.75rem 1.25rem', border: '1px solid #dadce0', borderRadius: '50px', fontSize: '1rem', outline: 'none' }}
               />
@@ -236,7 +246,7 @@ function App() {
               {chefResponse.data.map((recipe, idx) => (
                 <button 
                   key={recipe.id}
-                  onClick={() => { setActiveDraft(idx); setExpandedRecipeId(null); }}
+                  onClick={() => { guideRequest.current++; setActiveDraft(idx); setExpandedRecipeId(null); }}
                   style={{ 
                     padding: '0.5rem 1rem', backgroundColor: 'transparent', border: 'none', 
                     borderBottom: activeDraft === idx ? '2px solid #1a73e8' : '2px solid transparent', 
@@ -263,7 +273,7 @@ function App() {
                       
                       <div style={{ marginBottom: '1.5rem' }}>
                         <p style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', color: '#444746' }}>
-                          <strong>{recipe.missedIngredientCount === 0 ? "Cook now" : `Missing ${recipe.missedIngredientCount} ingredient${recipe.missedIngredientCount === 1 ? "" : "s"}`}</strong>
+                          <strong>{recipe.missedIngredientCount === 0 ? "Ingredients covered" : `Missing ${recipe.missedIngredientCount} ingredient${recipe.missedIngredientCount === 1 ? "" : "s"}`}</strong>
                         </p>
                         <p>In your pantry · {recipe.matchedIngredients.join(", ")}</p>
                         {recipe.missedIngredientCount > 0 && (
@@ -277,12 +287,12 @@ function App() {
                         )}
                       </div>
 
-                      {(features.chat || features.video) && <button 
+                      <button 
                         onClick={() => handleToggleInstructions(recipe.id)} 
                         style={{ alignSelf: 'flex-start', padding: '0.75rem 2rem', backgroundColor: '#f0f4f9', color: '#1a73e8', border: 'none', borderRadius: '50px', cursor: 'pointer', fontWeight: '600', transition: 'background-color 0.2s' }}
                       >
-                        {expandedRecipeId === recipe.id ? 'Hide guide' : 'Open cooking guide'}
-                      </button>}
+                        {expandedRecipeId === recipe.id ? 'Hide recipe details' : 'View recipe & instructions'}
+                      </button>
                     </div>
                   </div>
 
@@ -290,15 +300,29 @@ function App() {
                   {expandedRecipeId === recipe.id && (
                     <div style={{ padding: '1.5rem', backgroundColor: '#f8f9fa', borderRadius: '16px', border: '1px solid #e1e5ea' }}>
                       {videoIds[recipe.id] && <iframe width="100%" height="300" src={`https://www.youtube.com/embed/${videoIds[recipe.id]}`} title="Recipe tutorial" allowFullScreen />}
-                      {isLoadingInstructions ? <p style={{ margin: 0, color: '#444746' }}>✨ AI is writing the manual...</p> : instructions.length > 0 ? (
+                      {isLoadingInstructions && <p role="status">Loading recipe details…</p>}
+                      {guideError && <p role="alert">{guideError}</p>}
+                      {details && (
                         <>
-
-                          <h4 style={{ margin: '0 0 1rem 0', color: '#1f1f1f', fontSize: '1.1rem' }}>AI-generated cooking guide</h4>
-                          <ol style={{ margin: 0, paddingLeft: '1.5rem', color: '#444746', fontSize: '1rem' }}>
-                            {instructions.map((step, idx) => <li key={idx} style={{ marginBottom: '0.75rem', lineHeight: '1.6' }}>{step}</li>)}
-                          </ol>
+                          <h3>{details.servings ? `Ingredients · serves ${details.servings}` : "All ingredients"}</h3>
+                          <ul>{(details.quantities.length ? details.quantities : details.ingredients).map(item => <li key={item}>{item}</li>)}</ul>
+                          <p>{details.note}</p>
+                          {details.steps.length > 0 && (
+                            <>
+                              <h3>Cooking instructions</h3>
+                              <ol>{details.steps.map((step, index) => <li key={index} style={{ marginBottom: '0.8rem', lineHeight: 1.6 }}>{step}</li>)}</ol>
+                              <p style={{ color: '#444746' }}>{details.source}</p>
+                            </>
+                          )}
+                          {details.sourceUrl && <a href={details.sourceUrl} target="_blank" rel="noopener noreferrer">Open original recipe on {details.source} ↗</a>}
                         </>
-                      ) : <p style={{ margin: 0, color: '#d93025' }}>No written instructions available.</p>}
+                      )}
+                      {instructions.length > 0 && (
+                        <>
+                          <h3>AI-generated cooking guide</h3>
+                          <ol>{instructions.map((step, index) => <li key={index} style={{ marginBottom: '0.8rem', lineHeight: 1.6 }}>{step}</li>)}</ol>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -308,7 +332,7 @@ function App() {
         )}
 
         {features.chat && <div style={{
-          position: 'fixed', bottom: '24px', right: '24px', width: isChatOpen ? '380px' : 'auto',
+          position: 'fixed', bottom: '24px', right: '24px', width: isChatOpen ? 'min(380px, calc(100vw - 48px))' : 'auto',
           backgroundColor: '#ffffff', borderRadius: '24px', boxShadow: '0 8px 24px rgba(0,0,0,0.1)',
           overflow: 'hidden', display: 'flex', flexDirection: 'column', zIndex: 1000, transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
         }}>
@@ -336,11 +360,11 @@ function App() {
               
               <div style={{ padding: '16px', borderTop: '1px solid #f0f4f9', display: 'flex', gap: '8px', backgroundColor: '#ffffff' }}>
                 <input 
-                  type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  aria-label="Cooking question" type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                   placeholder="Ask a cooking question..." 
                   style={{ flex: 1, padding: '12px 20px', borderRadius: '50px', border: '1px solid #dadce0', outline: 'none', fontSize: '0.95rem', backgroundColor: '#f8f9fa' }}
                 />
-                <button onClick={handleSendMessage} style={{ width: '45px', height: '45px', borderRadius: '50%', backgroundColor: '#1a73e8', color: '#ffffff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>↑</button>
+                <button aria-label="Send message" disabled={isChatLoading} onClick={handleSendMessage} style={{ width: '45px', height: '45px', borderRadius: '50%', backgroundColor: '#1a73e8', color: '#ffffff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>↑</button>
               </div>
             </div>
           )}

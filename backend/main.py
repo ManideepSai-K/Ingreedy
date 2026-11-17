@@ -51,6 +51,7 @@ if GEMINI_API_KEY:
 
 # --- THE PRE-TRAINED ML BRAIN ---
 DATA_DIR = Path(__file__).resolve().parent
+GUIDES = json.loads((DATA_DIR / "recipe_guides.json").read_text())
 artifacts = [DATA_DIR / name for name in (
     "recipe_dataframe.pkl", "tfidf_vectorizer.pkl", "recipe_matrix.pkl"
 )]
@@ -81,11 +82,14 @@ PLURALS = {
     "eggs": "egg", "tomatoes": "tomato", "potatoes": "potato", "onions": "onion",
     "carrots": "carrot", "beans": "bean", "peppers": "pepper", "apples": "apple",
     "mushrooms": "mushroom", "lemons": "lemon", "bananas": "banana",
+    "chickpeas": "chickpea", "cloves": "clove", "breasts": "breast", "noodles": "noodle",
 }
 
 
 def pantry_name(name):
-    return " ".join(PLURALS.get(word, word) for word in re.findall(r"[a-z0-9]+", name.lower()))
+    normalized = " ".join(PLURALS.get(word, word) for word in re.findall(r"[a-z0-9]+", name.lower()))
+    synonyms = {"garbanzo bean": "chickpea", "garlic clove": "garlic"}
+    return synonyms.get(normalized, normalized)
 
 
 def recipe_items(raw):
@@ -103,7 +107,9 @@ def features():
 
 
 def input_keys(entries):
-    return {key for entry in entries for item in entry.split(",") if (key := pantry_name(item))}
+    keys = {pantry_name(item) for entry in entries for item in entry.split(",")}
+    keys.discard("")
+    return {GENERIC_NAMES.get(key, key) for key in keys}
 
 
 STAPLES = {"butter", "salt", "pepper", "black pepper", "oil", "olive oil", "vegetable oil", "water"}
@@ -113,14 +119,22 @@ GENERIC_NAMES = {
     "white rice": "rice", "cooked rice": "rice", "cooked white rice": "rice",
     "cooked brown rice": "rice", "brown rice": "rice", "long grain rice": "rice",
     "large egg": "egg", "medium egg": "egg",
+    "spaghetti": "pasta", "penne": "pasta", "penne pasta": "pasta", "fusilli": "pasta",
+    "rotini": "pasta", "macaroni": "pasta",
+    "yellow onion": "onion", "white onion": "onion",
+    "russet potato": "potato", "yukon gold potato": "potato",
+    "fresh spinach": "spinach", "baby spinach": "spinach",
+    "cooked chickpea": "chickpea", "canned chickpea": "chickpea",
+    "fresh tomato": "tomato", "roma tomato": "tomato",
+    "fresh garlic": "garlic",
 }
 
 
 def accepted_names(item):
-    exact = ingredient_keys[item]
-    if " or " in item:
-        return set(exact.split(" or "))
-    return {exact, GENERIC_NAMES.get(exact, exact)}
+    names = set()
+    for alternative in ingredient_keys[item].split(" or "):
+        names.add(GENERIC_NAMES.get(alternative, alternative))
+    return names
 
 
 accepted = {item: accepted_names(item) for item in ingredient_keys}
@@ -155,13 +169,34 @@ def get_recipes(request: RecipeRequest):
     for _, count, negative_score, idx, missing in sorted(candidates)[:5]:
         row = df_recipes.iloc[idx]
         results.append({
-            "id": int(row["id"]), "title": row["title"], "image": row["image"],
+            "id": int(row["id"]), "title": row["title"], "image": "" if pd.isna(row["image"]) else row["image"],
+            "ingredients": list(catalog[idx]),
             "matchedIngredients": [item for item in catalog[idx] if item not in missing],
             "missedIngredientCount": count,
             "missedIngredients": [{"name": item} for item in missing],
             "matchScore": round(float(-negative_score) * 100, 1),
         })
     return {"status": "success", "data": results}
+
+@app.get("/api/recipes/{recipe_id}")
+def recipe_details(recipe_id: int):
+    matches = df_recipes.loc[df_recipes["id"] == recipe_id]
+    if matches.empty:
+        raise HTTPException(status_code=404, detail="Recipe not found.")
+    row = matches.iloc[0]
+    guide = GUIDES.get(str(recipe_id))
+    return {
+        "id": recipe_id,
+        "title": row["title"],
+        "ingredients": list(recipe_items(row["ingredients"])),
+        "quantities": guide["quantities"] if guide else [],
+        "servings": guide["servings"] if guide else None,
+        "steps": guide["steps"] if guide else [],
+        "note": guide["note"] if guide else "Open the original recipe for ingredient quantities and cooking steps.",
+        "source": "Ingreedy kitchen basics" if guide else "Food.com",
+        "sourceUrl": None if guide else f"https://www.food.com/recipe/{recipe_id}",
+    }
+
 
 # 4. The Pure AI Instruction Engine 
 @app.get("/api/get-instructions/{recipe_id}")
@@ -170,8 +205,11 @@ def get_recipe_instructions(
     recipe_title: str = Query(None), 
     ingredients: str = Query(None)
 ):
+    details = recipe_details(recipe_id)
+    if details["steps"]:
+        return {"status": "success", "source": "saved_recipe", "steps": details["steps"]}
     if not GEMINI_API_KEY:
-         return {"status": "error", "steps": ["Instructions unavailable and AI is offline."]}
+        return {"status": "unavailable", "steps": [], "sourceUrl": details["sourceUrl"]}
 
     try:
         # Resolve recipe details from the same dataset used by search.
